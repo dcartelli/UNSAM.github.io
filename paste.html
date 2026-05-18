@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Ajuste automático con 3 rectas</title>
+
+<script src="./chart.js"></script>
+
+<style>
+
+body{
+    font-family:Arial;
+    margin:20px;
+}
+
+canvas{
+    max-width:800px;
+    max-height:400px;
+}
+
+.controls{
+    margin-bottom:20px;
+}
+.resultados{width: 80px}
+
+</style>
+</head>
+<body>
+
+<h2>Ajuste automático con tres rectas</h2>
+
+<div class="controls">
+
+    <!-- Cargar archivo -->
+    <input type="file" id="fileInput">
+
+<fieldset style="width:300px">
+  <legend>Select a maintenance drone:</legend>
+
+  <div>
+    <input type="radio" id="opcion_1" name="opcion" checked />
+    <label for="dewey">Ajuste &alpha; y &alpha;<sub>2</sub> (dos rectas)</label>
+  </div>
+
+  <div>
+    <input type="radio" id="opcion_2" name="opcion"/>
+    <label for="louie">Ajuste &omega;<sub>i</sub> y &omega;<sub>f</sub> (tres rectas)</label>
+  </div>
+</fieldset>
+
+</div>
+<div id="divResult3" style="width:380px" hidden>
+    <button class="resultados">Valor &omega;<sub>i</sub></button><input type="text" value="3" id="wi" readonly style="width:100px">
+    <button class="resultados">Error &omega;<sub>i</sub></button><input type="text" value="3" id="Ewi" readonly style="width:100px">
+    <button class="resultados">Valor &omega;<sub>f</sub></button><input type="text" value="3" id="wf" readonly style="width:100px">
+    <button class="resultados">Error &omega;<sub>f</sub></button><input type="text" value="3" id="Ewf" readonly style="width:100px">
+    <button class="resultados">Valor &Delta;t</button><input type="text" value="3" id="dt" readonly style="width:100px">
+    <button class="resultados">Error &Delta;t</button><input type="text" value="3" id="Edt" readonly style="width:100px">
+    <button class="copiar3" onclick="copiar3()">Copiar datos</button>
+</div>
+<div id="divResult2" style="width:380px" hidden>
+    <button class="resultados">Valor &alpha;</button><input type="text" value="3" id="alfa" readonly style="width:100px">
+    <button class="resultados">Error &alpha;</button><input type="text" value="3" id="Ealfa" readonly style="width:100px">
+    <button class="resultados">Valor &alpha;<sub>2</sub></button><input type="text" value="3" id="alfa2" readonly style="width:100px">
+    <button class="resultados">Error &alpha;<sub>2</sub></button><input type="text" value="3" id="Ealfa2" readonly style="width:100px">
+    <button class="copiar2" onclick="copiar2()">Copiar datos</button>
+</div>
+<canvas id="grafica"></canvas>
+
+<script>
+
+// =====================================================
+// VARIABLES GLOBALES
+// =====================================================
+
+let t = [];
+let y = [];
+
+let chart = null;
+
+
+// =====================================================
+// CARGAR ARCHIVO
+// =====================================================
+//
+// Formato esperado:
+//
+// t,y
+// 0,22.3
+// 0.1,22.2
+// 0.2,22.1
+//
+// o simplemente:
+//
+// 0 22.3
+// 0.1 22.2
+//
+// =====================================================
+
+document.getElementById("fileInput")
+.addEventListener("change", cargarArchivo);
+
+function copiar2(){
+    s=[document.getElementById("alfa" ).value,
+    document.getElementById("Ealfa").value,
+    document.getElementById("alfa2" ).value,
+    document.getElementById("Ealfa2").value]
+    texto = s.join("\t").replaceAll(".",separadorDecimal())
+    copiarTextoLegacy(texto)
+
+}
+
+function copiar3(){
+    s=[document.getElementById("wi" ).value,
+document.getElementById("Ewi").value,
+document.getElementById("wf" ).value,
+document.getElementById("Ewf").value,
+document.getElementById("dt" ).value,
+document.getElementById("Edt").value]
+
+texto = s.join("\t").replaceAll(".",separadorDecimal())
+    texto = s.join("\t").replaceAll(".",separadorDecimal())
+    copiarTextoLegacy(texto)
+
+}
+
+
+
+
+function cargarArchivo(event){
+
+    const file = event.target.files[0];
+
+    if(!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = function(e){
+
+        const contenido = e.target.result;
+
+        parsearDatos(contenido);
+
+        // graficarSoloDatos();
+        procesarDatos3R()
+    };
+
+    reader.readAsText(file);
+}
+
+document.addEventListener('paste', function(e) {
+        const texto = e.clipboardData.getData('text/plain');
+        // console
+        if (texto && texto.trim() !== '') {
+            parsearDatos(texto);
+            if (document.getElementById("opcion_1").checked){
+                procesarDatos2R()
+            }else{
+                procesarDatos3R()
+            }
+        }
+
+    });
+
+// =====================================================
+// PARSEAR DATOS
+// =====================================================
+
+function parsearDatos(texto){
+
+    t = [];
+    y = [];
+
+    const lineas = texto.split(/\r?\n/);
+
+    for(let linea of lineas){
+
+        linea = linea.trim();
+        linea = linea.replaceAll(",",".")
+        console.log(linea)
+        if(linea === "") continue;
+
+        // Ignorar encabezado
+        if(linea.toLowerCase().includes("t")) continue;
+
+        // Separadores posibles
+        const partes = linea.split(/[;\t]+/);
+
+        if(partes.length < 2) continue;
+
+        const tx = parseFloat(partes[0]);
+        const yy = parseFloat(partes[1]);
+
+        if(isNaN(tx) || isNaN(yy)) continue;
+
+        t.push(tx);
+        y.push(yy);
+    }
+
+    console.log("Datos cargados:", t.length);
+
+}
+
+
+
+// =====================================================
+// REGRESIÓN LINEAL
+// =====================================================
+
+function rmsResidual(x,y,fit){
+
+    let s = 0;
+
+    for(let i=0;i<x.length;i++){
+
+        const yf =
+            fit.m*x[i] + fit.b;
+
+        s += (y[i]-yf)**2;
+    }
+
+    return Math.sqrt(s/x.length);
+}
+
+
+
+
+function linearFit(x, y) {
+    const n = x.length;
+    
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    
+    for (let i = 0; i < n; i++) {
+        sx += x[i];
+        sy += y[i];
+        sxx += x[i] * x[i];
+        sxy += x[i] * y[i];
+    }
+    
+    const denominator = n * sxx - sx * sx;
+    const m = (n * sxy - sx * sy) / denominator;
+    const b = (sy - m * sx) / n;
+    
+    // Calcular residuos y error cuadrático total
+    let err = 0;
+    for (let i = 0; i < n; i++) {
+        const yf = m * x[i] + b;
+        err += (y[i] - yf) ** 2;
+    }
+    
+    // Varianza residual (error cuadrático medio)
+    const variance = err / (n - 2);  // n-2 grados de libertad
+    
+    // Errores estándar de m y b
+    const error_m = Math.sqrt(variance * n / denominator);
+    const error_b = Math.sqrt(variance * sxx / denominator);
+    
+    return {
+        m: m,
+        b: b,
+        error_m: error_m,    // Error estándar de la pendiente
+        error_b: error_b,    // Error estándar de la intersección
+        err: err,      // Suma de cuadrados de residuos
+    };
+}
+
+
+
+// =====================================================
+// AJUSTE AUTOMÁTICO
+// =====================================================
+
+function fitThreeSegments(t,y,minSegmentSize=5){
+
+    const n = t.length;
+    
+    let best = null;
+    let bestError = Infinity;
+
+    for(let i=minSegmentSize;i<n-2*minSegmentSize;i++){
+
+        for(let j=i+minSegmentSize;j<n-minSegmentSize;j++){
+
+            const fit1 = linearFit(
+                t.slice(0,i),
+                y.slice(0,i)
+            );
+
+            const fit2 = linearFit(
+                t.slice(i,j),
+                y.slice(i,j)
+            );
+
+            const fit3 = linearFit(
+                t.slice(j),
+                y.slice(j)
+            );
+
+            // Exigir pendiente negativa fuerte
+            if(fit2.m > 0) continue;
+
+            const totalError =
+                fit1.err +
+                fit2.err +
+                fit3.err;
+
+            if(totalError < bestError){
+
+                bestError = totalError;
+
+                best = {
+
+                    i,
+                    j,
+
+                    fit1,
+                    fit2,
+                    fit3,
+
+                    // punto anterior
+                    startDrop: t[i-1],
+                    startDropError: (t[i-1]-t[i-2])/2,
+                    startY: evalLine(fit1,t[i-1]),
+                    startYError: rmsResidual(t.slice(0,i),y.slice(0,i),fit1),
+                    endDrop: t[j],
+                    endDropError:(t[j+1]-t[j])/2,
+                    endY: evalLine(fit3,t[j]),
+                    endYError: rmsResidual(t.slice(j),y.slice(j),fit3),
+                    endYC: evalLine(fit3,t[i]),
+                    endYCError: rmsResidual(t.slice(j),y.slice(j),fit3)
+                };
+            }
+        }
+    }
+    setResult3R(best)
+    return best;
+}
+
+
+function fitTwoSegments(t,y,minSegmentSize=5){
+
+    const n = t.length;
+    
+    let best = null;
+    let bestError = Infinity;
+
+    for(let i=minSegmentSize;i<n-2*minSegmentSize;i++){
+
+        for(let j=i+minSegmentSize;j<n-minSegmentSize;j++){
+
+            const fit1 = linearFit(
+                t.slice(0,i),
+                y.slice(0,i)
+            );
+
+
+            const fit2 = linearFit(
+                t.slice(i),
+                y.slice(i)
+            );
+
+            // Exigir pendiente negativa
+            if(fit2.m > 0) continue;
+
+            const totalError =
+                fit1.err +
+                fit2.err ;
+
+            if(totalError < bestError){
+
+                bestError = totalError;
+
+                best = {
+
+                    i,
+
+                    fit1,
+                    fit2,
+
+                    // punto anterior
+                    alfa: fit1.m,
+                    alfa2: fit2.m,
+                    Ealfa: fit1.error_m,
+                    Ealfa2: fit2.error_m,
+                };
+            }
+        }
+    }
+    setResult2R(best)
+    return best;
+}
+
+
+
+
+// =====================================================
+// EVALUAR RECTA
+// =====================================================
+
+function evalLine(fit,x){
+    return fit.m*x + fit.b;
+}
+
+
+function setResult3R(best){
+console.log(best)
+let s =[(best.startY).toPrecision(7),best.startYError.toPrecision(3),(best.endY).toPrecision(7),
+        best.endYError.toPrecision(3),(best.endDrop-best.startDrop).toPrecision(3),((best.endDropError+best.startDropError)/2).toPrecision(3)
+] 
+
+document.getElementById("wi" ).value=s[0]
+document.getElementById("Ewi").value=s[1]
+document.getElementById("wf" ).value=s[2]
+document.getElementById("Ewf").value=s[3]
+document.getElementById("dt" ).value=s[4]
+document.getElementById("Edt").value=s[5]
+document.getElementById("divResult3").hidden=false
+document.getElementById("divResult2").hidden=true
+
+texto = s.join("\t").replaceAll(".",separadorDecimal())
+// copiarTextoLegacy(texto)
+
+}
+
+function setResult2R(best){
+
+console.log("set")
+let s =[(best.alfa).toPrecision(4),best.Ealfa.toPrecision(4),
+        (best.alfa2).toPrecision(4),  best.Ealfa2.toPrecision(4)] 
+
+document.getElementById("alfa" ).value=s[0]
+document.getElementById("Ealfa").value=s[1]
+document.getElementById("alfa2" ).value=s[2]
+document.getElementById("Ealfa2").value=s[3]
+
+document.getElementById("divResult2").hidden=false
+document.getElementById("divResult3").hidden=true
+
+texto = s.join("\t").replaceAll(".",separadorDecimal())
+// copiarTextoLegacy(texto)
+
+}
+
+
+
+
+
+
+function separadorDecimal() {
+    // Formatear un número para obtener el separador
+    const formato = (1.1).toLocaleString();
+    // El separador decimal será el caracter que esté entre el 1 y el 1
+    return formato.replace(/\d/g, '').charAt(0);
+}
+
+
+function copiarTextoLegacy(texto) {
+  var textarea = document.createElement('textarea');
+  textarea.value = texto;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  
+  try {
+    var exitoso = document.execCommand('copy');
+    if (exitoso) {
+      console.log('Copiado exitosamente');
+    }
+  } catch (err) {
+    console.error('Error:', err);
+  }
+  
+  document.body.removeChild(textarea);
+}
+
+
+
+
+
+
+// =====================================================
+// GRAFICAR SOLO DATOS
+// =====================================================
+
+function graficarSoloDatos(){
+
+    const datos = t.map((x,i)=>({
+        x:x,
+        y:y[i]
+    }));
+
+    if(chart) chart.destroy();
+
+    chart = new Chart(
+        document.getElementById("grafica"),
+        {
+            type:'scatter',
+
+            data:{
+                datasets:[
+                    {
+                        label:'Datos',
+                        data:datos,
+                        pointRadius:3,
+                        pointBackgroundColor:"red",
+                        borderColor:"red"
+
+                    }
+                ]
+            },
+
+            options:{
+                responsive:true,
+
+                scales:{
+                    x:{
+                        type:'linear'
+                    }
+                }
+            }
+        }
+    );
+}
+
+
+
+// =====================================================
+// PROCESAR AJUSTE
+// =====================================================
+
+function procesarDatos3R(){
+
+    if(t.length < 20){ alert("No hay suficientes datos");
+        return;
+    }
+
+    const result =  fitThreeSegments(t,y);
+
+    const originalData = t.map((x,i)=>({  x:x, y:y[i] }));
+
+    const fitLine1 = [];
+    const fitLine2 = [];
+    const fitLine3 = [];
+
+    for(let k=0;k<result.i;k++){  fitLine1.push({ x:t[k],  y:evalLine(result.fit1,t[k])  });   }
+    for(let k=result.i;k<result.j;k++){ fitLine2.push({ x:t[k], y:evalLine(result.fit2,t[k])   });   }
+    for(let k=result.j;k<t.length;k++){ fitLine3.push({ x:t[k], y:evalLine(result.fit3,t[k])   });   }
+
+
+    const startPoint = { x:t[result.i-1], y:y[result.i-1]  };
+    const endPoint   = { x:t[result.j],   y:y[result.j]    };
+
+    if(chart) chart.destroy();
+    chart = createChart3(fitLine1,fitLine2,fitLine3,startPoint,endPoint,originalData)
+
+    console.log("Inicio caída:",result.startDrop);
+    console.log("Fin caída:",result.endDrop     );
+
+}
+
+function procesarDatos2R(){
+
+    if(t.length < 20){ alert("No hay suficientes datos");
+        return;
+    }
+
+    const result =  fitTwoSegments(t,y);
+
+    const originalData = t.map((x,i)=>({  x:x, y:y[i] }));
+
+    const fitLine1 = [];
+    const fitLine2 = [];
+    // const fitLine3 = [];
+
+    for(let k=0;k<result.i;k++){  fitLine1.push({ x:t[k],  y:evalLine(result.fit1,t[k])  });   }
+    for(let k=result.i;k<t.length;k++){ fitLine2.push({ x:t[k], y:evalLine(result.fit2,t[k])   });   }
+
+
+    const startPoint = { x:t[result.i-1], y:y[result.i-1]  };
+    const endPoint   = { x:t[result.i],   y:y[result.i]    };
+
+    if(chart) chart.destroy();
+    chart = createChart2(fitLine1,fitLine2,startPoint,endPoint,originalData)
+
+    // console.log("Inicio caída:",result.startDrop);
+    // console.log("Fin caída:",result.endDrop     );
+
+}
+
+
+
+function createChart3(fitLine1,fitLine2,fitLine3,startPoint,endPoint,originalData){
+    chart = new Chart(
+        document.getElementById("grafica"),
+        {
+            type:'scatter',
+
+            data:{
+                datasets:[
+
+                    {
+                        label:'Ajuste inicio',
+                        data:fitLine1,
+                        type:'line',
+                        pointRadius:0,
+                        borderWidth:3,
+                        borderColor:"#66CF",
+                        backgroundColor:"#66CF"
+                    },
+
+                    {
+                        label:'Ajuste centro',
+                        data:fitLine2,
+                        type:'line',
+                        pointRadius:0,
+                        borderWidth:3,
+                        borderColor:"#66CF",
+                        backgroundColor:"#66CF"
+                    },
+
+                    {
+                        label:'Ajuste fin',
+                        data:fitLine3,
+                        type:'line',
+                        pointRadius:0,
+                        borderWidth:3,
+                        borderColor:"#66CF",
+                        backgroundColor:"#66CF"
+                    },
+
+                    {
+                        label:'Inicio contacto',
+                        data:[startPoint],
+                        // type:'dot',
+                        pointRadius:8,
+                        pointStyle:'circle',
+                        pointBackgroundColor:"green",
+                        borderColor:"green",
+                        backgroundColor:"green"
+                    },
+
+                    {
+                        label:'Fin contacto',
+                        data:[endPoint],
+                        // type:'dot',
+                        pointRadius:8,
+                        pointStyle:'circle',
+                        pointBackgroundColor:"black",
+                        borderColor:"black",
+                        backgroundColor:"black"
+                    },
+                    {
+                        label:'Datos',
+                        data:originalData,
+                        // type:'dot',
+                        pointRadius:3,
+                        pointBackgroundColor:"red",
+                        borderColor:"red"
+                    }
+
+                ]
+            },
+
+            options:{
+
+                responsive:true,
+                interaction: {
+                  mode: 'x',      // Shows all datasets for the hovered index
+                  intersect: false,    // Allows hover anywhere along the y-axis column
+                },
+                plugins:{
+                    legend:{
+                        position:'top'
+                    },
+                    tooltip: {
+                    filter: function(tooltipItem, data) {
+                        // console.log(tooltipItem, data)
+                        // Solo mostrar tooltips para el dataset de tipo 'bar'
+                        // const dataset = data.datasets[tooltipItem.datasetIndex];
+                        // return 
+                        return tooltipItem.dataset.pointRadius===8;
+                    }}
+                },
+
+                scales:{
+                    x:{
+                        type:'linear',
+                        title:{
+                            display:true,
+                            text:'Tiempo [s]'
+                        }
+                    },
+
+                    y:{
+                        title:{
+                            display:true,
+                            text:'Velocidad angular [rads]'
+                        }
+                    }
+                }
+            }
+        }
+    );
+    return chart;
+}
+
+
+function createChart2(fitLine1,fitLine2,startPoint,endPoint,originalData){
+    chart = new Chart(
+        document.getElementById("grafica"),
+        {
+            type:'scatter',
+
+            data:{
+                datasets:[
+
+                    {
+                        label:'Ajuste inicio',
+                        data:fitLine1,
+                        type:'line',
+                        pointRadius:0,
+                        borderWidth:3,
+                        borderColor:"#66CF",
+                        backgroundColor:"#66CF"
+                    },
+
+                    {
+                        label:'Ajuste Fin',
+                        data:fitLine2,
+                        type:'line',
+                        pointRadius:0,
+                        borderWidth:3,
+                        borderColor:"#66CF",
+                        backgroundColor:"#66CF"
+                    },
+
+                    {
+                        label:'Fin Pesa',
+                        data:[startPoint],
+                        // type:'dot',
+                        pointRadius:8,
+                        pointStyle:'circle',
+                        pointBackgroundColor:"green",
+                        borderColor:"green",
+                        backgroundColor:"green"
+                    },
+
+                    {
+                        label:'Inicio Piso',
+                        data:[endPoint],
+                        // type:'dot',
+                        pointRadius:8,
+                        pointStyle:'circle',
+                        pointBackgroundColor:"black",
+                        borderColor:"black",
+                        backgroundColor:"black"
+                    },
+                    {
+                        label:'Datos',
+                        data:originalData,
+                        // type:'dot',
+                        pointRadius:3,
+                        pointBackgroundColor:"red",
+                        borderColor:"red"
+                    }
+
+                ]
+            },
+
+            options:{
+
+                responsive:true,
+                interaction: {
+                  mode: 'x',      // Shows all datasets for the hovered index
+                  intersect: false,    // Allows hover anywhere along the y-axis column
+                },
+                plugins:{
+                    legend:{
+                        position:'top'
+                    },
+                    tooltip: {
+                    filter: function(tooltipItem, data) {
+                        // console.log(tooltipItem, data)
+                        // Solo mostrar tooltips para el dataset de tipo 'bar'
+                        // const dataset = data.datasets[tooltipItem.datasetIndex];
+                        // return 
+                        return tooltipItem.dataset.pointRadius===8;
+                    }}
+                },
+
+                scales:{
+                    x:{
+                        type:'linear',
+                        title:{
+                            display:true,
+                            text:'Tiempo [s]'
+                        }
+                    },
+
+                    y:{
+                        title:{
+                            display:true,
+                            text:'Velocidad angular [rad/s]'
+                        }
+                    }
+                }
+            }
+        }
+    );
+    return chart;
+}
+
+
+
+
+
+
+
+
+
+</script>
+
+</body>
+</html>
